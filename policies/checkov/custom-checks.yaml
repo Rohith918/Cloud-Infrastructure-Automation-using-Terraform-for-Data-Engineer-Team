@@ -1,0 +1,15 @@
+# Org-specific rules layered on top of Checkov's built-in ruleset.
+# Referenced by .checkov.yaml at the repo root.
+
+skip-check:
+  # Example: skip a rule that doesn't apply to a dev-only Kinesis stream
+  # - CKV_AWS_XXX
+
+check:
+  # Example placeholders for custom policies - real custom checks are
+  # authored as Python classes under a custom-checks/ package and referenced
+  # via --external-checks-dir in CI once the team has specific rules beyond
+  # Checkov's defaults (e.g. "every S3 bucket must have a DataClassification tag").
+  - CKV_AWS_18   # S3 bucket has access logging enabled
+  - CKV_AWS_21   # S3 bucket has versioning enabled
+  - CKV_AWS_144  # S3 bucket has cross-region replication enabled (prod only)

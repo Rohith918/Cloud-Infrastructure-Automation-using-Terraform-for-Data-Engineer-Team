@@ -1,0 +1,6 @@
+aws_region     = "us-east-1"
+environment    = "dev"
+owner          = "platform-team"
+cost_center    = "data-platform"
+alert_email    = ""
+admin_role_arn = "arn:aws:iam::123456789012:role/dataforge-ci-apply-role"
