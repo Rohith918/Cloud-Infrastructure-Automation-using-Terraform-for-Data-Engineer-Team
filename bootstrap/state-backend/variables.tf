@@ -7,13 +7,13 @@ variable "aws_region" {
 variable "state_bucket_name" {
   description = "Globally-unique S3 bucket name for Terraform state"
   type        = string
-  default     = "dataforge-terraform-state-shared"
+  default     = "dataforge-terraform-state-nr"
 }
 
 variable "lock_table_name" {
   description = "DynamoDB table name for state locking"
   type        = string
-  default     = "dataforge-terraform-locks"
+  default     = "dataforge-terraform-locks-nr"
 }
 
 variable "owner" {

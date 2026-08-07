@@ -12,4 +12,5 @@ check:
   # Checkov's defaults (e.g. "every S3 bucket must have a DataClassification tag").
   - CKV_AWS_18   # S3 bucket has access logging enabled
   - CKV_AWS_21   # S3 bucket has versioning enabled
+  - CKV_AWS_19   # Ensure all data stored in the S3 bucket is encrypted at rest
   - CKV_AWS_144  # S3 bucket has cross-region replication enabled (prod only)

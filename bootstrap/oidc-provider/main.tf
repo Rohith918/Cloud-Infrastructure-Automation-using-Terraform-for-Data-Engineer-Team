@@ -61,20 +61,23 @@ resource "aws_iam_role_policy_attachment" "plan_readonly" {
 
 # ---- Apply role: write access, assumable ONLY from main branch inside the
 # "prod" GitHub environment (required reviewers gate this in GitHub itself)
+# Creates one role per environment.
 resource "aws_iam_role" "apply" {
-  name                 = "dataforge-ci-apply-role"
+  for_each             = toset(["dev", "staging", "prod"])
+  name                 = "dataforge-ci-apply-${each.key}-role"
   max_session_duration = 1800
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow"
-      Principal = { Federated = aws_iam_openid_connect_provider.github.arn }
+      Principal = { Federated = aws_iam_openid_connect_provider.github.arn } # Note: Corrected Principal
       Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/${var.github_repo}:environment:${var.protected_environment_name}"
+          # This ensures each role is scoped to its corresponding GitHub Environment.
+          "token.actions.githubusercontent.com:sub" = "repo:${var.github_org}/${var.github_repo}:environment:${each.key}"
         }
       }
     }]
@@ -84,7 +87,7 @@ resource "aws_iam_role" "apply" {
   # broad, this boundary caps what the role can actually do.
   permissions_boundary = aws_iam_policy.apply_boundary.arn
 
-  tags = { Project = "dataforge", Purpose = "ci-apply" }
+  tags = { Project = "dataforge", Purpose = "ci-apply", Environment = each.key }
 }
 
 resource "aws_iam_policy" "apply_boundary" {
@@ -122,6 +125,7 @@ resource "aws_iam_policy" "apply_boundary" {
 # s3/kms/glue/emr/mwaa/redshift/iam actions on dataforge-* resource names.
 # Left as a variable-driven attachment so it can evolve per environment.
 resource "aws_iam_role_policy_attachment" "apply_scoped" {
-  role       = aws_iam_role.apply.name
+  for_each   = aws_iam_role.apply
+  role       = each.value.name
   policy_arn = var.apply_role_policy_arn
 }

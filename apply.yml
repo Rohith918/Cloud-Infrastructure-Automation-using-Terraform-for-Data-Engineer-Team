@@ -1,0 +1,59 @@
+# .github/workflows/apply.yml
+# Runs `terraform apply` on the main branch, gated by a GitHub Environment.
+name: Terraform Apply
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write # Required for OIDC
+  contents: read
+
+jobs:
+  apply:
+    name: Apply
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [dev, staging, prod]
+
+    # Use a GitHub Environment to gate deployments.
+    # This environment must be created in the GitHub repo settings and can have protection rules (e.g., required reviewers).
+    # The OIDC 'apply' role is scoped to trust this specific environment name.
+    environment: ${{ matrix.environment }}
+
+    # This condition ensures the job only runs if files in its corresponding environment directory have changed.
+    if: |
+      (
+        # Check for changes in the specific environment directory
+        (github.event.repository.pushed_at != null &&
+         join(github.event.commits.*.modified, ' ') =~ 'environments/${{ matrix.environment }}/') ||
+        # Or check for changes in shared modules
+        (github.event.repository.pushed_at != null &&
+         join(github.event.commits.*.modified, ' ') =~ 'modules/')
+      )
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # Dynamically assume the role corresponding to the environment matrix value.
+          # e.g., for the 'dev' job, this becomes 'dataforge-ci-apply-dev-role'.
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/dataforge-ci-apply-${{ matrix.environment }}-role
+          aws-region: us-east-1
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Terraform Init
+        run: terraform -chdir=environments/${{ matrix.environment }} init
+
+      - name: Terraform Apply
+        run: terraform -chdir=environments/${{ matrix.environment }} apply -auto-approve

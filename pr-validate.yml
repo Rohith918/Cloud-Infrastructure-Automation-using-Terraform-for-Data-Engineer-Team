@@ -1,0 +1,58 @@
+# .github/workflows/pr-validate.yml
+# Runs on every Pull Request to validate code formatting, syntax, and policy compliance.
+name: PR Validation
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  terraform-validate:
+    name: Terraform Format & Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+
+      - name: Terraform Init (all modules)
+        run: |
+          # Initialize each directory that contains a backend config
+          for dir in environments/*/; do
+            if [ -f "${dir}backend.tf" ]; then
+              echo "::group::Initializing ${dir}"
+              terraform -chdir="${dir}" init -backend=false
+              echo "::endgroup::"
+            fi
+          done
+
+      - name: Terraform Validate (all modules)
+        run: |
+          for dir in environments/*/; do
+            if [ -f "${dir}backend.tf" ]; then
+              echo "::group::Validating ${dir}"
+              terraform -chdir="${dir}" validate
+              echo "::endgroup::"
+            fi
+          done
+
+  checkov:
+    name: Policy-as-Code Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          config_file: .checkov.yaml,policies/checkov/custom-checks.yaml
+          framework: terraform
