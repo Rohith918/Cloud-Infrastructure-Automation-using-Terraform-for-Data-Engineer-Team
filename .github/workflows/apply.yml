@@ -7,24 +7,30 @@ on:
     paths:
       - "environments/**"
       - "modules/**"
+      - "bootstrap/**"
 
 permissions:
-  contents: read  # Removed id-token: write since OIDC is no longer used
+  contents: read
 
 jobs:
   apply:
     name: "Apply (${{ matrix.environment }})"
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false 
+      fail-fast: false
       matrix:
         environment: [dev]
 
     environment: ${{ matrix.environment }}
 
     steps:
-      - name: Checkout
+      - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.0
 
       - name: Configure AWS Credentials via Secrets
         uses: aws-actions/configure-aws-credentials@v4
@@ -33,10 +39,15 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.6.0
+      - name: Bootstrap Backend Infrastructure if Missing
+        run: |
+          if ! aws s3api head-bucket --bucket "dataforge-terraform-state-shared" 2>/dev/null; then
+            echo "State bucket 'dataforge-terraform-state-shared' does not exist. Provisioning backend now..."
+            terraform -chdir=bootstrap init
+            terraform -chdir=bootstrap apply -auto-approve
+          else
+            echo "State bucket 'dataforge-terraform-state-shared' already exists. Skipping bootstrap."
+          fi
 
       - name: Terraform Init
         run: terraform -chdir=environments/${{ matrix.environment }} init
