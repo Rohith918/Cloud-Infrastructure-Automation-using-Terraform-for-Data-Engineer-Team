@@ -1,63 +1,71 @@
-name: "Terraform Plan"
+name: "Terraform Spec Plan"
 
 on:
   pull_request:
     branches:
       - main
+    paths:
+      - "environments/dev/**"
+      - "modules/**"
+      - ".github/workflows/plan.yml"
 
 permissions:
-  id-token: write # Required for OIDC authentication
+  id-token: write      # Required for OIDC authentication
   contents: read
   pull-requests: write # Required to post plan comments on PRs
 
 jobs:
   plan:
-    name: "Plan (${{ matrix.environment }})"
+    name: "Generate Terraform Plan"
     runs-on: ubuntu-latest
-    strategy:
-      # Run a separate plan job for each environment that has changes.
-      matrix:
-        environment: [dev, staging, prod]
 
-    # This condition ensures the job only runs if files in its corresponding environment directory have changed.
-    if: |
-      github.event_name == 'pull_request' &&
-      (
-        # Check for changes in the specific environment directory
-        (join(github.event.pull_request.changed_files, ' ') =~ 'environments/${{ matrix.environment }}/') ||
-        # Or check for changes in shared modules
-        (join(github.event.pull_request.changed_files, ' ') =~ 'modules/')
-      )
+    defaults:
+      run:
+        working-directory: environments/dev
 
     steps:
-      - name: Checkout
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials
+      - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/dataforge-ci-plan-role
+          role-to-assume: arn:aws:iam::680480585151:role/terraform
           aws-region: us-east-1
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.6.0
+          terraform_version: 1.7.0
 
       - name: Terraform Init
-        id: init
-        run: terraform -chdir=environments/${{ matrix.environment }} init
+        run: terraform init
 
       - name: Terraform Plan
         id: plan
-        working-directory: environments/${{ matrix.environment }}
-        run: terraform plan -no-color -out=tfplan
+        run: terraform plan -no-color -input=false
         continue-on-error: true
 
-      - name: Post Plan to PR
-        uses: terraform-actions/cli-comment-autoplan@v1
+      - name: Post Plan to Pull Request
+        uses: actions/github-script@v7
         with:
-          path: environments/${{ matrix.environment }}
-          plan_command: terraform show -no-color tfplan
-          job_name: 'Plan (${{ matrix.environment }})'
-          exit_code: ${{ steps.plan.outputs.exitcode }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `#### Terraform Plan Status: \`${{ steps.plan.outcome }}\`
+            
+            <details><summary>Show Plan Output</summary>
+            
+            \`\`\`hcl
+            ${process.env.PLAN_OUTPUT}
+            \`\`\`
+            
+            </details>`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+        env:
+          PLAN_OUTPUT: "${{ steps.plan.outputs.stdout }}"
