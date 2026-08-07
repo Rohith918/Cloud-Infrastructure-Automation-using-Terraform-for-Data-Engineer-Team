@@ -1,9 +1,3 @@
-# bootstrap/oidc-provider
-# GitHub Actions <-> AWS trust. Applied once per AWS account (this is an
-# account-wide singleton resource). Creates two roles:
-#   - plan role: assumable from ANY branch/PR, read-only permissions
-#   - apply role: assumable ONLY from main, inside a protected GitHub
-#     "environment" (so a human reviewer gates token issuance)
 
 terraform {
   required_version = ">= 1.6.0"
