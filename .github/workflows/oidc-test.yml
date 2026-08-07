@@ -1,0 +1,29 @@
+name: AWS OIDC Connection Test
+
+on:
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+
+permissions:
+  id-token: write  # Crucial for OIDC token request
+  contents: read
+
+jobs:
+  test-aws-connection:
+    name: "Test AWS STS Identity"
+    runs-on: ubuntu-latest
+    environment: dev # Tests environment context
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::680480585151:role/nr918
+          aws-region: us-east-1
+
+      - name: Print Assumed AWS Identity
+        run: |
+          echo "Successfully authenticated with AWS!"
+          aws sts get-caller-identity
