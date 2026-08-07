@@ -4,8 +4,12 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "environments/**"
+      - "modules/**"
 
 permissions:
+  id-token: write  # CRITICAL: Required for OIDC token generation
   contents: read
 
 jobs:
@@ -13,31 +17,20 @@ jobs:
     name: "Apply (${{ matrix.environment }})"
     runs-on: ubuntu-latest
     strategy:
-      # Set max-parallel or fail-fast depending on environment deployment rules
       fail-fast: false 
       matrix:
-        environment: [dev, staging, prod]
+        environment: [dev]
 
-    # Target specific GitHub Environment for variable/secret resolution & approvals
     environment: ${{ matrix.environment }}
-
-    # FIXED: Replaced env.ENVIRONMENT with matrix.environment
-    if: |
-      (
-        contains(join(github.event.commits.*.modified, ' '), format('environments/{0}/', matrix.environment)) ||
-        contains(join(github.event.commits.*.modified, ' '), 'modules/')
-      )
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials
+      - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          # Automatically resolves environment-scoped secrets if defined in GitHub
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: arn:aws:iam::680480585151:role/nr918
           aws-region: us-east-1
 
       - name: Setup Terraform
