@@ -1,6 +1,6 @@
 terraform {
   backend "s3" {
-    bucket         = "dataforge-terraform-state-shared"
+    bucket         = "dataforge-terraform-state-nr"
     key            = "dev/terraform.tfstate"
     region         = "us-east-1"
     dynamodb_table = "dataforge-terraform-locks"
