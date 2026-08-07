@@ -31,7 +31,7 @@ resource "aws_iam_openid_connect_provider" "github" {
 
 # ---- Plan role: read-only, assumable from any branch of this repo ----
 resource "aws_iam_role" "plan" {
-  name                 = "dataforge-ci-plan-role"
+  name                 = "terraform"
   max_session_duration = 1800 # 30 min
 
   assume_role_policy = jsonencode({

@@ -11,7 +11,7 @@ variable "github_org" {
 variable "github_repo" {
   description = "Repo name"
   type        = string
-  default     = "dataforge"
+  default     = "Cloud-Infrastructure-Automation-using-Terraform-for-Data-Engineer-Team"
 }
 
 variable "protected_environment_name" {
