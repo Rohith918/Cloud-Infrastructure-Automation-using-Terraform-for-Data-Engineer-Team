@@ -39,7 +39,9 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
+      # 1. BOOTSTRAP BACKEND
       - name: Bootstrap Backend Infrastructure if Missing
+        id: bootstrap
         run: |
           BUCKET_EXISTS=0
           TABLE_EXISTS=0
@@ -60,8 +62,24 @@ jobs:
             echo "State bucket and DynamoDB lock table both exist. Skipping bootstrap."
           fi
 
+      # Cleanup bootstrap if bootstrap itself fails halfway
+      - name: Auto-Destroy Bootstrap on Failure
+        if: failure() && steps.bootstrap.outcome == 'failure'
+        run: |
+          echo "⚠️ Bootstrap step failed! Tearing down partial backend resources..."
+          terraform -chdir=bootstrap/state-backend destroy -auto-approve || true
+
+      # 2. ENVIRONMENT INITIALIZATION & APPLY
       - name: Terraform Init
         run: terraform -chdir=environments/${{ matrix.environment }} init
 
       - name: Terraform Apply
+        id: env_apply
         run: terraform -chdir=environments/${{ matrix.environment }} apply -auto-approve
+
+      # 3. ENVIRONMENT AUTO-DESTROY ON FAILURE
+      - name: Rollback / Auto-Destroy Environment Resources on Failure
+        if: failure() && steps.env_apply.outcome == 'failure'
+        run: |
+          echo "⚠️ Pipeline failed during Terraform Apply! Running Terraform Destroy to roll back created resources..."
+          terraform -chdir=environments/${{ matrix.environment }} destroy -auto-approve
