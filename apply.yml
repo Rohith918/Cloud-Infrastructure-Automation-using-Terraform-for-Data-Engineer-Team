@@ -19,9 +19,7 @@ jobs:
       matrix:
         environment: [dev, staging, prod]
 
-    # Use a GitHub Environment to gate deployments.
-    # This environment must be created in the GitHub repo settings and can have protection rules (e.g., required reviewers).
-    # The OIDC 'apply' role is scoped to trust this specific environment name.
+
     environment: ${{ matrix.environment }}
 
     # This condition ensures the job only runs if files in its corresponding environment directory have changed.
