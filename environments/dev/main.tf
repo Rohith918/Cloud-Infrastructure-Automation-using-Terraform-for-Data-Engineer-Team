@@ -7,6 +7,9 @@ locals {
     CostCenter          = var.cost_center
     DataClassification  = "internal"
   }
+
+  # Construct DAG bucket ARN directly to prevent circular dependencies between MWAA & IAM
+  dag_bucket_arn = "arn:aws:s3:::${local.name_prefix}-airflow-dags"
 }
 
 module "networking" {
@@ -36,6 +39,16 @@ module "data_lake" {
   }
 }
 
+module "iam_roles" {
+  source               = "../../modules/iam-roles"
+  name_prefix          = local.name_prefix
+  raw_bucket_arn        = module.data_lake.bucket_arns["raw"]
+  curated_bucket_arn    = module.data_lake.bucket_arns["curated"]
+  analytics_bucket_arn  = module.data_lake.bucket_arns["analytics"]
+  dag_bucket_arn        = local.dag_bucket_arn
+  tags                  = local.common_tags
+}
+
 module "mwaa" {
   source              = "../../modules/mwaa"
   environment_name    = "${local.name_prefix}-airflow"
@@ -44,16 +57,6 @@ module "mwaa" {
   subnet_ids          = slice(module.networking.private_subnet_ids, 0, 2)
   environment_class   = "mw1.small"
   tags                = local.common_tags
-}
-
-module "iam_roles" {
-  source                = "../../modules/iam-roles"
-  name_prefix            = local.name_prefix
-  raw_bucket_arn         = module.data_lake.bucket_arns["raw"]
-  curated_bucket_arn     = module.data_lake.bucket_arns["curated"]
-  analytics_bucket_arn   = module.data_lake.bucket_arns["analytics"]
-  dag_bucket_arn         = module.mwaa.dag_bucket_arn
-  tags                   = local.common_tags
 }
 
 module "glue_catalog" {
