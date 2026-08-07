@@ -9,8 +9,7 @@ on:
       - "modules/**"
 
 permissions:
-  id-token: write  # CRITICAL: Required for OIDC token generation
-  contents: read
+  contents: read  # Removed id-token: write since OIDC is no longer used
 
 jobs:
   apply:
@@ -27,10 +26,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials via OIDC
+      - name: Configure AWS Credentials via Secrets
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::680480585151:role/nr918
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: us-east-1
 
       - name: Setup Terraform
