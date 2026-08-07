@@ -1,45 +1,52 @@
-name: "Apply Infrastructure Deployment"
+name: "Terraform Apply"
 
 on:
   push:
     branches:
       - main
-    paths:
-      - "environments/dev/**"
-      - "modules/**"
-      - ".github/workflows/apply.yml"
 
 permissions:
-  id-token: write
+  # No special permissions needed for static key-based auth
   contents: read
 
 jobs:
   apply:
-    name: "Terraform Apply (dev)"
+    name: "Apply (${{ matrix.environment }})"
     runs-on: ubuntu-latest
-    environment: dev # Requires GitHub Environment setup if manual approval is configured
+    strategy:
+      matrix:
+        environment: [dev, staging, prod]
 
-    defaults:
-      run:
-        working-directory: environments/dev
+    # Use a GitHub Environment to gate deployments if needed (e.g., for manual approval).
+    environment: ${{ matrix.environment }}
+
+    # This condition ensures the job only runs if files in its corresponding environment directory have changed.
+    if: |
+      (
+        contains(join(github.event.commits.*.modified, ' '), format('environments/{0}/', env.ENVIRONMENT)) ||
+        contains(join(github.event.commits.*.modified, ' '), 'modules/')
+      )
+    env:
+      ENVIRONMENT: ${{ matrix.environment }}
 
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials via OIDC
+      - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::680480585151:role/nr918
-          aws-region: us-east-2
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1 # Aligned with other workflows
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.7.0
+          terraform_version: 1.6.0 # Aligned with other workflows
 
       - name: Terraform Init
-        run: terraform init
+        run: terraform -chdir=environments/${{ matrix.environment }} init
 
       - name: Terraform Apply
-        run: terraform apply -auto-approve -input=false
+        run: terraform -chdir=environments/${{ matrix.environment }} apply -auto-approve
