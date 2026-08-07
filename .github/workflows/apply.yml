@@ -6,7 +6,6 @@ on:
       - main
 
 permissions:
-  # No special permissions needed for static key-based auth
   contents: read
 
 jobs:
@@ -14,20 +13,20 @@ jobs:
     name: "Apply (${{ matrix.environment }})"
     runs-on: ubuntu-latest
     strategy:
+      # Set max-parallel or fail-fast depending on environment deployment rules
+      fail-fast: false 
       matrix:
         environment: [dev, staging, prod]
 
-    # Use a GitHub Environment to gate deployments if needed (e.g., for manual approval).
+    # Target specific GitHub Environment for variable/secret resolution & approvals
     environment: ${{ matrix.environment }}
 
-    # This condition ensures the job only runs if files in its corresponding environment directory have changed.
+    # FIXED: Replaced env.ENVIRONMENT with matrix.environment
     if: |
       (
-        contains(join(github.event.commits.*.modified, ' '), format('environments/{0}/', env.ENVIRONMENT)) ||
+        contains(join(github.event.commits.*.modified, ' '), format('environments/{0}/', matrix.environment)) ||
         contains(join(github.event.commits.*.modified, ' '), 'modules/')
       )
-    env:
-      ENVIRONMENT: ${{ matrix.environment }}
 
     steps:
       - name: Checkout
@@ -36,14 +35,15 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
+          # Automatically resolves environment-scoped secrets if defined in GitHub
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1 # Aligned with other workflows
+          aws-region: us-east-1
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.6.0 # Aligned with other workflows
+          terraform_version: 1.6.0
 
       - name: Terraform Init
         run: terraform -chdir=environments/${{ matrix.environment }} init
