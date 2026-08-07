@@ -41,12 +41,23 @@ jobs:
 
       - name: Bootstrap Backend Infrastructure if Missing
         run: |
-          if ! aws s3api head-bucket --bucket "dataforge-terraform-state-shared" 2>/dev/null; then
-            echo "State bucket 'dataforge-terraform-state-shared' does not exist. Provisioning backend now..."
+          BUCKET_EXISTS=0
+          TABLE_EXISTS=0
+
+          if aws s3api head-bucket --bucket "dataforge-terraform-state-shared" 2>/dev/null; then
+            BUCKET_EXISTS=1
+          fi
+
+          if aws dynamodb describe-table --table-name "dataforge-terraform-locks" 2>/dev/null >/dev/null; then
+            TABLE_EXISTS=1
+          fi
+
+          if [ $BUCKET_EXISTS -eq 0 ] || [ $TABLE_EXISTS -eq 0 ]; then
+            echo "State backend components missing (Bucket: $BUCKET_EXISTS, DynamoDB: $TABLE_EXISTS). Provisioning backend now..."
             terraform -chdir=bootstrap/state-backend init
             terraform -chdir=bootstrap/state-backend apply -auto-approve
           else
-            echo "State bucket 'dataforge-terraform-state-shared' already exists. Skipping bootstrap."
+            echo "State bucket and DynamoDB lock table both exist. Skipping bootstrap."
           fi
 
       - name: Terraform Init
