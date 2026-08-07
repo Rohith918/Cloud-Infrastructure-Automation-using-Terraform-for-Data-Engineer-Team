@@ -43,8 +43,8 @@ jobs:
         run: |
           if ! aws s3api head-bucket --bucket "dataforge-terraform-state-shared" 2>/dev/null; then
             echo "State bucket 'dataforge-terraform-state-shared' does not exist. Provisioning backend now..."
-            terraform -chdir=bootstrap init
-            terraform -chdir=bootstrap apply -auto-approve
+            terraform -chdir=bootstrap/state-backend init
+            terraform -chdir=bootstrap/state-backend apply -auto-approve
           else
             echo "State bucket 'dataforge-terraform-state-shared' already exists. Skipping bootstrap."
           fi
