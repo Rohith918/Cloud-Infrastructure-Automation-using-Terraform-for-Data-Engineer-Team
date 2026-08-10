@@ -1,3 +1,5 @@
+data "aws_caller_identity" "current" {}
+
 # ------------------------------------------------------------------------------
 # 0. UNIQUENESS HELPER
 # S3 bucket names are globally unique across ALL AWS accounts, so a static
@@ -9,7 +11,7 @@ resource "random_id" "suffix" {
 }
 
 # ------------------------------------------------------------------------------
-# 1. NETWORKING (VPC & Gateway Endpoint)
+# 1. NETWORKING (VPC, Gateway Endpoint, flow logs, locked-down default SG)
 # ------------------------------------------------------------------------------
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
@@ -36,13 +38,112 @@ resource "aws_vpc_endpoint" "s3" {
   tags = { Name = "s3-vpc-endpoint" }
 }
 
+# Every VPC gets an unmanaged default security group. Left alone, it
+# usually has an "allow all traffic from self" rule. Managing it explicitly
+# with no ingress/egress blocks strips that down to deny-everything.
+resource "aws_default_security_group" "default" {
+  vpc_id = aws_vpc.main.id
+
+  tags = { Name = "medallion-default-sg-locked-down" }
+}
+
+resource "aws_iam_role" "vpc_flow_logs" {
+  name = "medallion-vpc-flow-logs-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { Service = "vpc-flow-logs.amazonaws.com" }
+    }]
+  })
+
+  tags = { Name = "medallion-vpc-flow-logs-role" }
+}
+
+resource "aws_iam_role_policy" "vpc_flow_logs" {
+  name = "medallion-vpc-flow-logs-policy"
+  role = aws_iam_role.vpc_flow_logs.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams",
+      ]
+      Resource = "${aws_cloudwatch_log_group.vpc_flow_logs.arn}:*"
+    }]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "vpc_flow_logs" {
+  name              = "/aws/vpc/medallion-flow-logs"
+  retention_in_days = 30
+
+  tags = { Name = "medallion-vpc-flow-logs" }
+}
+
+resource "aws_flow_log" "vpc" {
+  vpc_id               = aws_vpc.main.id
+  traffic_type          = "ALL"
+  log_destination_type  = "cloud-watch-logs"
+  log_destination       = aws_cloudwatch_log_group.vpc_flow_logs.arn
+  iam_role_arn          = aws_iam_role.vpc_flow_logs.arn
+
+  tags = { Name = "medallion-vpc-flow-log" }
+}
+
 # ------------------------------------------------------------------------------
-# 2. SECURITY (KMS Customer-Managed Key)
+# 2. SECURITY (KMS Customer-Managed Key with explicit policy)
 # ------------------------------------------------------------------------------
+data "aws_iam_policy_document" "kms_key_policy" {
+  # Root account must retain full admin rights over the key, or the key can
+  # become unmanageable (this is the AWS-recommended baseline statement).
+  statement {
+    sid    = "EnableRootAccountFullAccess"
+    effect = "Allow"
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+    actions   = ["kms:*"]
+    resources = ["*"]
+  }
+
+  # Scoped to just the AWS services that actually need to encrypt/decrypt
+  # with this key — S3 (data lake + access logs), Glue, and Athena.
+  statement {
+    sid    = "AllowServiceUsage"
+    effect = "Allow"
+    principals {
+      type = "Service"
+      identifiers = [
+        "s3.amazonaws.com",
+        "logging.s3.amazonaws.com",
+        "glue.amazonaws.com",
+        "athena.amazonaws.com",
+      ]
+    }
+    actions = [
+      "kms:Decrypt",
+      "kms:GenerateDataKey",
+      "kms:DescribeKey",
+    ]
+    resources = ["*"]
+  }
+}
+
 resource "aws_kms_key" "data_lake_key" {
   description             = "KMS key for Medallion data lake encryption"
   deletion_window_in_days = 7
   enable_key_rotation     = true
+  policy                  = data.aws_iam_policy_document.kms_key_policy.json
 
   tags = { Name = "medallion-kms-key" }
 }
@@ -53,7 +154,98 @@ resource "aws_kms_alias" "data_lake_key_alias" {
 }
 
 # ------------------------------------------------------------------------------
-# 3. MEDALLION S3 DATA LAKE (Bronze / Silver / Gold)
+# 3. ACCESS LOG BUCKET
+# Dedicated bucket that receives S3 server access logs from the data lake
+# bucket. It logs to itself (AWS explicitly supports this) so it doesn't
+# need a second bucket just to satisfy its own logging requirement.
+# ------------------------------------------------------------------------------
+resource "aws_s3_bucket" "access_logs" {
+  bucket        = "medallion-lake-logs-${var.environment_name}-${random_id.suffix.hex}"
+  force_destroy = true
+}
+
+resource "aws_s3_bucket_versioning" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "access_logs" {
+  bucket                  = aws_s3_bucket.access_logs.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      kms_master_key_id = aws_kms_key.data_lake_key.arn
+      sse_algorithm     = "aws:kms"
+    }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_logging" "access_logs" {
+  bucket        = aws_s3_bucket.access_logs.id
+  target_bucket = aws_s3_bucket.access_logs.id
+  target_prefix = "self-access-logs/"
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+
+  rule {
+    id     = "expire-old-logs"
+    status = "Enabled"
+    filter {}
+
+    expiration {
+      days = 180
+    }
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+}
+
+# Grants the S3 log-delivery service permission to write into this bucket.
+resource "aws_s3_bucket_policy" "access_logs" {
+  bucket = aws_s3_bucket.access_logs.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "S3ServerAccessLogsPolicy"
+      Effect    = "Allow"
+      Principal = { Service = "logging.s3.amazonaws.com" }
+      Action    = "s3:PutObject"
+      Resource  = "${aws_s3_bucket.access_logs.arn}/*"
+      Condition = {
+        ArnLike = {
+          "aws:SourceArn" = [
+            aws_s3_bucket.medallion_lake.arn,
+            aws_s3_bucket.access_logs.arn,
+          ]
+        }
+        StringEquals = {
+          "aws:SourceAccount" = data.aws_caller_identity.current.account_id
+        }
+      }
+    }]
+  })
+}
+
+# ------------------------------------------------------------------------------
+# 4. MEDALLION S3 DATA LAKE (Bronze / Silver / Gold)
 # ------------------------------------------------------------------------------
 resource "aws_s3_bucket" "medallion_lake" {
   bucket = "medallion-lake-${var.environment_name}-${random_id.suffix.hex}"
@@ -89,6 +281,30 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "medallion_lake" {
       kms_master_key_id = aws_kms_key.data_lake_key.arn
       sse_algorithm     = "aws:kms"
     }
+    bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_logging" "medallion_lake" {
+  bucket        = aws_s3_bucket.medallion_lake.id
+  target_bucket = aws_s3_bucket.access_logs.id
+  target_prefix = "medallion-lake-access-logs/"
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "medallion_lake" {
+  bucket = aws_s3_bucket.medallion_lake.id
+
+  rule {
+    id     = "expire-noncurrent-versions"
+    status = "Enabled"
+    filter {}
+
+    noncurrent_version_expiration {
+      noncurrent_days = 90
+    }
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
   }
 }
 
@@ -108,7 +324,7 @@ resource "aws_s3_object" "gold_folder" {
 }
 
 # ------------------------------------------------------------------------------
-# 4. METADATA CATALOG & QUERY ENGINE
+# 5. METADATA CATALOG & QUERY ENGINE
 # ------------------------------------------------------------------------------
 resource "aws_glue_catalog_database" "medallion_catalog" {
   name = "medallion_catalog_db"

@@ -10,10 +10,27 @@ ETL jobs, ingestion code, or transformation logic live here.
 | Layer | Purpose |
 |---|---|
 | VPC + S3 Gateway Endpoint | Keeps S3 traffic off the public internet at no extra cost |
-| KMS customer-managed key | Encrypts everything at rest |
-| S3 bucket (`bronze/`, `silver/`, `gold/`) | The data lake itself |
+| VPC flow logs (CloudWatch) | Records accepted/rejected traffic for the VPC |
+| Locked-down default security group | Default SG denies all traffic instead of the AWS default "allow from self" |
+| KMS customer-managed key (explicit policy) | Encrypts everything at rest |
+| S3 bucket (`bronze/`, `silver/`, `gold/`) | The data lake itself, versioned, with a lifecycle rule |
+| S3 access-log bucket | Receives server access logs from the data lake bucket (and logs to itself) |
 | Glue Catalog database | Metadata catalog for the lake |
-| Athena workgroup | Query engine over the Gold layer |
+| Athena workgroup | Query engine over the Gold layer, enforced KMS encryption |
+
+### Security scanning notes
+
+This project is scanned with Checkov on every pipeline run (`soft_fail: false`
+— findings block the deploy). Two checks are intentionally skipped via
+`.checkov.yaml`, both with justification comments in that file:
+
+- `CKV2_AWS_62` (S3 event notifications) — no consumer wired up yet
+- `CKV_AWS_144` (S3 cross-region replication) — out of scope for a
+  single-region small-business setup; would need a second bucket in a
+  second region plus a replication IAM role
+
+If you run Checkov yourself, pass the config explicitly or skips won't
+apply: `checkov --config-file .checkov.yaml`.
 
 ## Architecture
 

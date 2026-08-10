@@ -17,3 +17,11 @@ output "glue_catalog_database" {
 output "athena_workgroup" {
   value = aws_athena_workgroup.analytics.name
 }
+
+output "access_logs_bucket_name" {
+  value = aws_s3_bucket.access_logs.bucket
+}
+
+output "vpc_flow_log_group" {
+  value = aws_cloudwatch_log_group.vpc_flow_logs.name
+}

@@ -1,5 +1,9 @@
 # Checkov config file — lets you run `checkov --config-file .checkov.yaml`
 # locally with the exact same settings the CI pipeline uses.
+#
+# IMPORTANT: if you run checkov directly (CLI or GitHub Action) without
+# passing --config-file / config_file, this file is ignored and nothing
+# below gets skipped. Always point at it explicitly.
 
 directory:
   - .
@@ -17,3 +21,12 @@ skip-check:
   # objects landing in bronze/. Revisit once an ingestion/ETL process
   # subscribes to bucket events.
   - CKV2_AWS_62
+
+  # CKV_AWS_144: S3 cross-region replication.
+  # Deliberately out of scope for this project: it's a single-region,
+  # single-environment small-business setup, and cross-region replication
+  # would require a second bucket in a second region plus a replication
+  # IAM role — real ongoing cost and complexity that doesn't match the
+  # "minimal infrastructure" requirement this project was built for.
+  # Revisit if/when there's a disaster-recovery or multi-region requirement.
+  - CKV_AWS_144
