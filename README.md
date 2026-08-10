@@ -1,4 +1,4 @@
-# AWS Medallion Data Lake — CI/CD Infrastructure Automation
+# Terraform-Automation-using-Github-Actions — CI/CD Infrastructure Automation
 
 Minimal, single-environment AWS infrastructure for a small-business Medallion
 (Bronze/Silver/Gold) data lake, provisioned entirely through Terraform and
