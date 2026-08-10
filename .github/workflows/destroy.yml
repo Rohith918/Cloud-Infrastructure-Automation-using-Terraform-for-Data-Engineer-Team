@@ -1,0 +1,64 @@
+name: "Manual Infrastructure Destroy"
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: "Type 'DESTROY' to confirm resource deletion"
+        required: true
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  destroy:
+    name: "Destroy AWS Infrastructure"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate Confirmation Safety Check
+        run: |
+          if [ "${{ github.event.inputs.confirmation }}" != "DESTROY" ]; then
+            echo "::error::Confirmation text did not match 'DESTROY'. Aborting teardown."
+            exit 1
+          fi
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ">= 1.5.0"
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: "us-east-1"
+
+      - name: Bootstrap State Backend Variables
+        id: backend
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          STATE_BUCKET="medallion-tf-state-${ACCOUNT_ID}"
+          DYNAMO_TABLE="medallion-tf-locks"
+          
+          echo "bucket=${STATE_BUCKET}" >> $GITHUB_OUTPUT
+          echo "dynamodb_table=${DYNAMO_TABLE}" >> $GITHUB_OUTPUT
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ steps.backend.outputs.bucket }}" \
+            -backend-config="key=medallion-lake/terraform.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="dynamodb_table=${{ steps.backend.outputs.dynamodb_table }}"
+
+      - name: Terraform Destroy
+        run: |
+          # Since force_destroy = true is set on the S3 buckets, 
+          # terraform destroy will purge and remove all buckets & VPC resources.
+          terraform destroy -auto-approve
