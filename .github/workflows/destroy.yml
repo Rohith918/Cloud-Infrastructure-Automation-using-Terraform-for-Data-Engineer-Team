@@ -1,127 +1,96 @@
-name: "Manual Infrastructure Destroy"
+name: "Terraform Medallion Pipeline - Manual Destroy"
 
 on:
   workflow_dispatch:
     inputs:
-      confirmation:
-        description: "Type 'DESTROY' to confirm resource deletion"
+      confirm:
+        description: 'Type "destroy" to confirm — this tears down all provisioned infrastructure (VPC, S3 data lake, KMS key, Glue, Athena, etc). The state backend (S3 bucket + DynamoDB table) is NOT touched.'
         required: true
-        default: ""
 
-permissions:
-  contents: read
+# Shares a concurrency group with deploy.yml so a manual destroy can never
+# run at the same time as a deploy — both would fight over the same state.
+concurrency:
+  group: terraform-medallion
+  cancel-in-progress: false
 
 jobs:
-  destroy:
-    name: "Destroy AWS Infrastructure"
+  terraform-destroy:
+    name: "Destroy Provisioned Infrastructure"
     runs-on: ubuntu-latest
 
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: "us-east-1"
+      DYNAMODB_TABLE: "tf-state-medallion-locks"
+
     steps:
-      - name: Validate Confirmation Safety Check
+      # Manual "type to confirm" gate — this is a destructive action
+      # triggered by hand, so a typo'd click shouldn't be enough to run it.
+      - name: Confirm Destroy Intent
         run: |
-          if [ "${{ github.event.inputs.confirmation }}" != "DESTROY" ]; then
-            echo "::error::Confirmation text did not match 'DESTROY'. Aborting teardown."
+          if [ "${{ github.event.inputs.confirm }}" != "destroy" ]; then
+            echo "Confirmation input did not match 'destroy'. Aborting — nothing was touched."
             exit 1
           fi
 
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Resolve Account ID & Bucket Name
+        run: |
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
+          echo "STATE_BUCKET=tf-state-medallion-${ACCOUNT_ID}" >> "$GITHUB_ENV"
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: ">= 1.5.0"
+          terraform_version: 1.5.7
 
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: "us-east-1"
-
-      - name: Resolve Account ID
-        id: backend
+      # Deliberately does NOT bootstrap/create the backend the way
+      # deploy.yml does. This workflow should only ever run against a
+      # backend that already exists from a prior deploy — if it's
+      # missing, there is nothing valid to destroy against, and silently
+      # creating a fresh empty one here would make `terraform destroy`
+      # quietly no-op instead of failing loudly and telling you why.
+      - name: Verify State Backend Exists
         run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          echo "account_id=${ACCOUNT_ID}" >> $GITHUB_OUTPUT
+          if ! aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null; then
+            echo "State bucket $STATE_BUCKET not found."
+            echo "Either nothing has been deployed yet, or it was already destroyed."
+            exit 1
+          fi
+          if ! aws dynamodb describe-table --table-name "$DYNAMODB_TABLE" --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "DynamoDB lock table $DYNAMODB_TABLE not found."
+            echo "Either nothing has been deployed yet, or it was already destroyed."
+            exit 1
+          fi
 
       - name: Terraform Init
         run: |
-          # Finds state bucket dynamically or falls back gracefully
-          STATE_BUCKET=$(aws s3api list-buckets --query "Buckets[?contains(Name, 'state')].Name" --output text | awk '{print $1}')
-          
-          if [ -n "$STATE_BUCKET" ]; then
-            terraform init -reconfigure \
-              -backend-config="bucket=${STATE_BUCKET}" \
-              -backend-config="key=medallion-lake/terraform.tfstate" \
-              -backend-config="region=us-east-1" \
-              -backend-config="use_lockfile=true" || true
-          fi
+          terraform init \
+            -backend-config="bucket=${STATE_BUCKET}" \
+            -backend-config="key=medallion/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="dynamodb_table=${DYNAMODB_TABLE}"
 
       - name: Terraform Destroy
+        run: terraform destroy -auto-approve
+
+      # NOTE: no cleanup of $STATE_BUCKET or $DYNAMODB_TABLE here on
+      # purpose — the whole point of this workflow is to tear down the
+      # project resources while leaving the backend intact, so the next
+      # deploy.yml run has state to init against instead of starting from
+      # a missing-backend error.
+
+      - name: Display Success Message
+        if: success()
         run: |
-          terraform destroy -auto-approve -lock=false || true
-
-      - name: Cleanup Orphaned Non-S3 Resources
-        run: |
-          echo "Cleaning up static resources that may exist outside of Terraform state..."
-
-          # 1. CloudWatch Log Group
-          aws logs delete-log-group --log-group-name "/aws/vpc/medallion-flow-logs" --region us-east-1 2>/dev/null || true
-
-          # 2. KMS Alias
-          aws kms delete-alias --alias-name "alias/medallion-data-lake" --region us-east-1 2>/dev/null || true
-
-          # 3. Glue Catalog Database
-          aws glue delete-database --name "medallion_catalog_db" --region us-east-1 2>/dev/null || true
-
-          # 4. Athena Workgroup
-          aws athena delete-work-group --work-group "medallion_analytics_workgroup" --recursive-deleteOption --region us-east-1 2>/dev/null || true
-
-          # 5. IAM Role & Inline Policies
-          aws iam delete-role-policy --role-name "medallion-vpc-flow-logs-role" --policy-name "medallion-vpc-flow-logs-policy" 2>/dev/null || true
-          aws iam delete-role --role-name "medallion-vpc-flow-logs-role" 2>/dev/null || true
-
-          echo "Static resources cleaned up successfully."
-
-      - name: Force Purge and Delete Remaining S3 Buckets
-        run: |
-          purge_and_delete_bucket() {
-            BUCKET_NAME=$1
-            if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
-              echo "Purging all objects and versions from bucket: $BUCKET_NAME..."
-              
-              # Delete all object versions
-              VERSIONS=$(aws s3api list-object-versions --bucket "$BUCKET_NAME" --output json --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}')
-              if [ "$VERSIONS" != '{"Objects":null}' ] && [ -n "$VERSIONS" ]; then
-                aws s3api delete-objects --bucket "$BUCKET_NAME" --delete "$VERSIONS" >/dev/null 2>&1 || true
-              fi
-
-              # Delete all delete markers
-              MARKERS=$(aws s3api list-object-versions --bucket "$BUCKET_NAME" --output json --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}')
-              if [ "$MARKERS" != '{"Objects":null}' ] && [ -n "$MARKERS" ]; then
-                aws s3api delete-objects --bucket "$BUCKET_NAME" --delete "$MARKERS" >/dev/null 2>&1 || true
-              fi
-
-              # Recursive sync fallback
-              aws s3 rm "s3://${BUCKET_NAME}" --recursive >/dev/null 2>&1 || true
-
-              echo "Deleting bucket: $BUCKET_NAME..."
-              aws s3 rb "s3://${BUCKET_NAME}" --force
-              echo "Bucket $BUCKET_NAME successfully deleted."
-            else
-              echo "Bucket $BUCKET_NAME does not exist or was already deleted."
-            fi
-          }
-
-          # 1. Purge data lake buckets matching the deployment pattern
-          LAKE_BUCKETS=$(aws s3api list-buckets --query "Buckets[?contains(Name, 'medallion-lake')].Name" --output text)
-          for BUCKET in $LAKE_BUCKETS; do
-            purge_and_delete_bucket "$BUCKET"
-          done
-
-          # 2. Purge state/shared backend buckets
-          STATE_BUCKETS=$(aws s3api list-buckets --query "Buckets[?contains(Name, 'state')].Name" --output text)
-          for BUCKET in $STATE_BUCKETS; do
-            purge_and_delete_bucket "$BUCKET"
-          done
+          echo "=========================================================="
+          echo " SUCCESS: Project infrastructure destroyed."
+          echo " State backend ($STATE_BUCKET / $DYNAMODB_TABLE) was left"
+          echo " in place — the next deploy run will reuse it, and Terraform"
+          echo " will see an empty state (no drift) since everything it"
+          echo " was tracking has been destroyed."
+          echo "=========================================================="
