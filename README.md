@@ -1,4 +1,4 @@
-# Terraform-Automation-using-Github-Actions — CI/CD Infrastructure Automation
+# Cloud-Infrastructure-Automation-using-Terraform-for-Data-Engineer-Team
 
 Minimal, single-environment AWS infrastructure for a small-business Medallion
 (Bronze/Silver/Gold) data lake, provisioned entirely through Terraform and
