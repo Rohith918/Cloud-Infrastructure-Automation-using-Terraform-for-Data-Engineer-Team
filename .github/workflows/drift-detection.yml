@@ -1,0 +1,72 @@
+name: "Hourly Drift Detection"
+
+on:
+  schedule:
+    # Runs at minute 0 of every hour
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift-check:
+    name: "Check Terraform Drift"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ">= 1.5.0"
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: "us-east-1"
+
+      - name: Bootstrap State Backend Variables
+        id: backend
+        run: |
+          # Re-creates or resolves backend state configuration
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          STATE_BUCKET="medallion-tf-state-${ACCOUNT_ID}"
+          DYNAMO_TABLE="medallion-tf-locks"
+          
+          echo "bucket=${STATE_BUCKET}" >> $GITHUB_OUTPUT
+          echo "dynamodb_table=${DYNAMO_TABLE}" >> $GITHUB_OUTPUT
+
+      - name: Terraform Init
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ steps.backend.outputs.bucket }}" \
+            -backend-config="key=medallion-lake/terraform.tfstate" \
+            -backend-config="region=us-east-1" \
+            -backend-config="dynamodb_table=${{ steps.backend.outputs.dynamodb_table }}"
+
+      - name: Terraform Plan (Drift Check)
+        id: plan
+        run: |
+          # -detailed-exitcode returns:
+          # 0 = Succeeded, no changes (no drift)
+          # 1 = Error
+          # 2 = Succeeded, changes present (drift detected)
+          set +e
+          terraform plan -detailed-exitcode -no-color
+          EXIT_CODE=$?
+          set -e
+          
+          if [ $EXIT_CODE -eq 2 ]; then
+            echo "::error::Infrastructure drift detected!"
+            exit 2
+          elif [ $EXIT_CODE -eq 1 ]; then
+            echo "::error::Terraform plan execution failed."
+            exit 1
+          else
+            echo "Drift check passed — infrastructure matches state."
+          fi
