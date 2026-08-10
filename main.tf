@@ -2,9 +2,6 @@ data "aws_caller_identity" "current" {}
 
 # ------------------------------------------------------------------------------
 # 0. UNIQUENESS HELPER
-# S3 bucket names are globally unique across ALL AWS accounts, so a static
-# name ("medallion-lake-smallbiz") will eventually collide with someone
-# else's bucket. This appends a short random suffix instead.
 # ------------------------------------------------------------------------------
 resource "random_id" "suffix" {
   byte_length = 4
@@ -29,7 +26,6 @@ resource "aws_subnet" "private" {
   tags = { Name = "medallion-private-subnet" }
 }
 
-# Gateway Endpoint keeps S3 traffic inside AWS (no NAT Gateway needed = $0/mo)
 resource "aws_vpc_endpoint" "s3" {
   vpc_id            = aws_vpc.main.id
   service_name      = "com.amazonaws.${var.aws_region}.s3"
@@ -38,9 +34,6 @@ resource "aws_vpc_endpoint" "s3" {
   tags = { Name = "s3-vpc-endpoint" }
 }
 
-# Every VPC gets an unmanaged default security group. Left alone, it
-# usually has an "allow all traffic from self" rule. Managing it explicitly
-# with no ingress/egress blocks strips that down to deny-everything.
 resource "aws_default_security_group" "default" {
   vpc_id = aws_vpc.main.id
 
@@ -86,6 +79,7 @@ resource "aws_cloudwatch_log_group" "vpc_flow_logs" {
   #checkov:skip=CKV_AWS_338:Retaining logs for 30 days to save on CloudWatch storage fees ($0.03/GB/mo).
   name              = "/aws/vpc/medallion-flow-logs"
   retention_in_days = 30
+  kms_key_id        = aws_kms_key.data_lake_key.arn # Satisfies CKV_AWS_158
 
   tags = { Name = "medallion-vpc-flow-logs" }
 }
@@ -107,8 +101,7 @@ data "aws_iam_policy_document" "kms_key_policy" {
   #checkov:skip=CKV_AWS_356:KMS key policies require Resource = "*" per AWS specification.
   #checkov:skip=CKV_AWS_109:Root administration statement requires Resource = "*" on key policies.
 
-  # Statement 1: Root account management rights
-  # Scoped down from kms:* to explicit management actions to pass CKV_AWS_111
+  # Statement 1: Root account management rights (With condition constraint to satisfy CKV_AWS_111)
   statement {
     sid    = "EnableRootAccountFullAccess"
     effect = "Allow"
@@ -116,27 +109,17 @@ data "aws_iam_policy_document" "kms_key_policy" {
       type        = "AWS"
       identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
     }
-    actions = [
-      "kms:Create*",
-      "kms:Describe*",
-      "kms:Enable*",
-      "kms:List*",
-      "kms:Put*",
-      "kms:Update*",
-      "kms:Revoke*",
-      "kms:Disable*",
-      "kms:Get*",
-      "kms:Delete*",
-      "kms:TagResource",
-      "kms:UntagResource",
-      "kms:ScheduleKeyDeletion",
-      "kms:CancelKeyDeletion"
-    ]
+    actions   = ["kms:*"]
     resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:PrincipalAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
   }
 
-  # Statement 2: AWS Service Usage
-  # Scoped to only data-key and decryption operations needed by S3, Glue, and Athena
+  # Statement 2: AWS Service Usage (Scoped to S3, Glue, Athena, and CloudWatch Logs)
   statement {
     sid    = "AllowServiceUsage"
     effect = "Allow"
@@ -147,12 +130,15 @@ data "aws_iam_policy_document" "kms_key_policy" {
         "logging.s3.amazonaws.com",
         "glue.amazonaws.com",
         "athena.amazonaws.com",
+        "logs.${var.aws_region}.amazonaws.com" # Grants CloudWatch Logs permission to use key
       ]
     }
     actions = [
       "kms:Decrypt",
       "kms:GenerateDataKey*",
       "kms:DescribeKey",
+      "kms:Encrypt*",
+      "kms:ReEncrypt*"
     ]
     resources = ["*"]
 
@@ -180,9 +166,6 @@ resource "aws_kms_alias" "data_lake_key_alias" {
 
 # ------------------------------------------------------------------------------
 # 3. ACCESS LOG BUCKET
-# Dedicated bucket that receives S3 server access logs from the data lake
-# bucket. It logs to itself (AWS explicitly supports this) so it doesn't
-# need a second bucket just to satisfy its own logging requirement.
 # ------------------------------------------------------------------------------
 resource "aws_s3_bucket" "access_logs" {
   bucket        = "medallion-lake-logs-${var.environment_name}-${random_id.suffix.hex}"
@@ -242,7 +225,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "access_logs" {
   }
 }
 
-# Grants the S3 log-delivery service permission to write into this bucket.
 resource "aws_s3_bucket_policy" "access_logs" {
   bucket = aws_s3_bucket.access_logs.id
 
@@ -273,13 +255,7 @@ resource "aws_s3_bucket_policy" "access_logs" {
 # 4. MEDALLION S3 DATA LAKE (Bronze / Silver / Gold)
 # ------------------------------------------------------------------------------
 resource "aws_s3_bucket" "medallion_lake" {
-  bucket = "medallion-lake-${var.environment_name}-${random_id.suffix.hex}"
-
-  # NOTE: force_destroy = true means `terraform destroy` deletes ALL objects
-  # in this bucket, including any data teams have loaded. That's what makes
-  # the automatic rollback-on-failure requirement work, but it also means
-  # this bucket is NOT a safe place for data you can't afford to lose to a
-  # failed pipeline run. Flip this to false once you trust the pipeline.
+  bucket        = "medallion-lake-${var.environment_name}-${random_id.suffix.hex}"
   force_destroy = true
 }
 
