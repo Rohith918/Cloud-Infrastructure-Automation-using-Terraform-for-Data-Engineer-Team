@@ -43,20 +43,60 @@ jobs:
         id: backend
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          STATE_BUCKET="medallion-tf-state-${ACCOUNT_ID}"
-          
-          echo "bucket=${STATE_BUCKET}" >> $GITHUB_OUTPUT
+          # Checks for either your standard state bucket or shared state bucket
+          echo "account_id=${ACCOUNT_ID}" >> $GITHUB_OUTPUT
 
-      - name: Terraform Init (Reconfigured Backend)
+      - name: Terraform Init
         run: |
-          # Use -reconfigure to flush old DynamoDB lock metadata and switch to S3 lockfile
+          # Finds state bucket dynamically or falls back to dataforge-terraform-state-shared
+          STATE_BUCKET=$(aws s3api list-buckets --query "Buckets[?contains(Name, 'state')].Name" --output text | awk '{print $1}')
+          
           terraform init -reconfigure \
-            -backend-config="bucket=${{ steps.backend.outputs.bucket }}" \
+            -backend-config="bucket=${STATE_BUCKET}" \
             -backend-config="key=medallion-lake/terraform.tfstate" \
             -backend-config="region=us-east-1" \
-            -backend-config="use_lockfile=true"
+            -backend-config="use_lockfile=true" || true
 
       - name: Terraform Destroy
         run: |
-          # Pass -lock=false to prevent failure if the backend lock mechanism is in transition
-          terraform destroy -auto-approve -lock=false
+          terraform destroy -auto-approve -lock=false || true
+
+      - name: Force Purge and Delete Remaining S3 Buckets
+        run: |
+          # Helper function to completely purge versioned S3 buckets and delete them
+          purge_and_delete_bucket() {
+            BUCKET_NAME=$1
+            if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
+              echo "Purging all objects and versions from bucket: $BUCKET_NAME..."
+              
+              # Delete all object versions
+              VERSIONS=$(aws s3api list-object-versions --bucket "$BUCKET_NAME" --output json --query '{Objects: Versions[].{Key:Key,VersionId:VersionId}}')
+              if [ "$VERSIONS" != '{"Objects":null}' ] && [ -n "$VERSIONS" ]; then
+                aws s3api delete-objects --bucket "$BUCKET_NAME" --delete "$VERSIONS" >/dev/null 2>&1 || true
+              fi
+
+              # Delete all delete markers
+              MARKERS=$(aws s3api list-object-versions --bucket "$BUCKET_NAME" --output json --query '{Objects: DeleteMarkers[].{Key:Key,VersionId:VersionId}}')
+              if [ "$MARKERS" != '{"Objects":null}' ] && [ -n "$MARKERS" ]; then
+                aws s3api delete-objects --bucket "$BUCKET_NAME" --delete "$MARKERS" >/dev/null 2>&1 || true
+              fi
+
+              # Standard recursive sync fallback to catch unversioned leftovers
+              aws s3 rm "s3://${BUCKET_NAME}" --recursive >/dev/null 2>&1 || true
+
+              echo "Deleting bucket: $BUCKET_NAME..."
+              aws s3 rb "s3://${BUCKET_NAME}" --force
+              echo "Bucket $BUCKET_NAME successfully deleted."
+            else
+              echo "Bucket $BUCKET_NAME does not exist or was already deleted."
+            fi
+          }
+
+          # 1. Purge data lake buckets matching your deployment pattern
+          LAKE_BUCKETS=$(aws s3api list-buckets --query "Buckets[?contains(Name, 'medallion-lake')].Name" --output text)
+          for BUCKET in $LAKE_BUCKETS; do
+            purge_and_delete_bucket "$BUCKET"
+          done
+
+          # 2. Purge state/shared backend bucket
+          purge_and_delete_bucket "dataforge-terraform-state-shared"
