@@ -1,0 +1,8 @@
+# Copy this file to terraform.tfvars for local runs (it's gitignored).
+# The GitHub Actions pipeline does not use this file — it relies on the
+# variable defaults in variables.tf plus -backend-config flags for the
+# backend. This file is only a convenience for `terraform plan` on your
+# own machine.
+
+aws_region       = "us-east-1"
+environment_name = "smallbiz"

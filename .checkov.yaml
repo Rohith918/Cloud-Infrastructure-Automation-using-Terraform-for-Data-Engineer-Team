@@ -1,0 +1,19 @@
+# Checkov config file — lets you run `checkov --config-file .checkov.yaml`
+# locally with the exact same settings the CI pipeline uses.
+
+directory:
+  - .
+
+framework:
+  - terraform
+
+download-external-modules: false
+
+# Keep this list short and justified. Every skip here is a finding you're
+# knowingly accepting, not one you've fixed — review it periodically.
+skip-check:
+  # CKV2_AWS_62: S3 bucket event notifications.
+  # Not needed yet — no downstream consumers wired up to react to new
+  # objects landing in bronze/. Revisit once an ingestion/ETL process
+  # subscribes to bucket events.
+  - CKV2_AWS_62

@@ -1,0 +1,22 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+crash.*.log
+
+# Variable files that may contain secrets - keep the .example version only
+*.tfvars
+*.tfvars.json
+!terraform.tfvars.example
+
+# Rollback helper files written by the workflow
+versions.json
+markers.json
+
+# OS / editor cruft
+.DS_Store
+*.swp
