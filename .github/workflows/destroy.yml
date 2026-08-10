@@ -39,26 +39,24 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: "us-east-1"
 
-      - name: Bootstrap State Backend Variables
+      - name: Resolve Account ID & Backend Config
         id: backend
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           STATE_BUCKET="medallion-tf-state-${ACCOUNT_ID}"
-          DYNAMO_TABLE="medallion-tf-locks"
           
           echo "bucket=${STATE_BUCKET}" >> $GITHUB_OUTPUT
-          echo "dynamodb_table=${DYNAMO_TABLE}" >> $GITHUB_OUTPUT
 
-      - name: Terraform Init
+      - name: Terraform Init (Reconfigured Backend)
         run: |
-          terraform init \
+          # Use -reconfigure to flush old DynamoDB lock metadata and switch to S3 lockfile
+          terraform init -reconfigure \
             -backend-config="bucket=${{ steps.backend.outputs.bucket }}" \
             -backend-config="key=medallion-lake/terraform.tfstate" \
             -backend-config="region=us-east-1" \
-            -backend-config="dynamodb_table=${{ steps.backend.outputs.dynamodb_table }}"
+            -backend-config="use_lockfile=true"
 
       - name: Terraform Destroy
         run: |
-          # Since force_destroy = true is set on the S3 buckets, 
-          # terraform destroy will purge and remove all buckets & VPC resources.
-          terraform destroy -auto-approve
+          # Pass -lock=false to prevent failure if the backend lock mechanism is in transition
+          terraform destroy -auto-approve -lock=false
