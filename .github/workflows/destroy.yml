@@ -39,31 +39,53 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: "us-east-1"
 
-      - name: Resolve Account ID & Backend Config
+      - name: Resolve Account ID
         id: backend
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          # Checks for either your standard state bucket or shared state bucket
           echo "account_id=${ACCOUNT_ID}" >> $GITHUB_OUTPUT
 
       - name: Terraform Init
         run: |
-          # Finds state bucket dynamically or falls back to dataforge-terraform-state-shared
+          # Finds state bucket dynamically or falls back gracefully
           STATE_BUCKET=$(aws s3api list-buckets --query "Buckets[?contains(Name, 'state')].Name" --output text | awk '{print $1}')
           
-          terraform init -reconfigure \
-            -backend-config="bucket=${STATE_BUCKET}" \
-            -backend-config="key=medallion-lake/terraform.tfstate" \
-            -backend-config="region=us-east-1" \
-            -backend-config="use_lockfile=true" || true
+          if [ -n "$STATE_BUCKET" ]; then
+            terraform init -reconfigure \
+              -backend-config="bucket=${STATE_BUCKET}" \
+              -backend-config="key=medallion-lake/terraform.tfstate" \
+              -backend-config="region=us-east-1" \
+              -backend-config="use_lockfile=true" || true
+          fi
 
       - name: Terraform Destroy
         run: |
           terraform destroy -auto-approve -lock=false || true
 
+      - name: Cleanup Orphaned Non-S3 Resources
+        run: |
+          echo "Cleaning up static resources that may exist outside of Terraform state..."
+
+          # 1. CloudWatch Log Group
+          aws logs delete-log-group --log-group-name "/aws/vpc/medallion-flow-logs" --region us-east-1 2>/dev/null || true
+
+          # 2. KMS Alias
+          aws kms delete-alias --alias-name "alias/medallion-data-lake" --region us-east-1 2>/dev/null || true
+
+          # 3. Glue Catalog Database
+          aws glue delete-database --name "medallion_catalog_db" --region us-east-1 2>/dev/null || true
+
+          # 4. Athena Workgroup
+          aws athena delete-work-group --work-group "medallion_analytics_workgroup" --recursive-deleteOption --region us-east-1 2>/dev/null || true
+
+          # 5. IAM Role & Inline Policies
+          aws iam delete-role-policy --role-name "medallion-vpc-flow-logs-role" --policy-name "medallion-vpc-flow-logs-policy" 2>/dev/null || true
+          aws iam delete-role --role-name "medallion-vpc-flow-logs-role" 2>/dev/null || true
+
+          echo "Static resources cleaned up successfully."
+
       - name: Force Purge and Delete Remaining S3 Buckets
         run: |
-          # Helper function to completely purge versioned S3 buckets and delete them
           purge_and_delete_bucket() {
             BUCKET_NAME=$1
             if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
@@ -81,7 +103,7 @@ jobs:
                 aws s3api delete-objects --bucket "$BUCKET_NAME" --delete "$MARKERS" >/dev/null 2>&1 || true
               fi
 
-              # Standard recursive sync fallback to catch unversioned leftovers
+              # Recursive sync fallback
               aws s3 rm "s3://${BUCKET_NAME}" --recursive >/dev/null 2>&1 || true
 
               echo "Deleting bucket: $BUCKET_NAME..."
@@ -92,11 +114,14 @@ jobs:
             fi
           }
 
-          # 1. Purge data lake buckets matching your deployment pattern
+          # 1. Purge data lake buckets matching the deployment pattern
           LAKE_BUCKETS=$(aws s3api list-buckets --query "Buckets[?contains(Name, 'medallion-lake')].Name" --output text)
           for BUCKET in $LAKE_BUCKETS; do
             purge_and_delete_bucket "$BUCKET"
           done
 
-          # 2. Purge state/shared backend bucket
-          purge_and_delete_bucket "dataforge-terraform-state-shared"
+          # 2. Purge state/shared backend buckets
+          STATE_BUCKETS=$(aws s3api list-buckets --query "Buckets[?contains(Name, 'state')].Name" --output text)
+          for BUCKET in $STATE_BUCKETS; do
+            purge_and_delete_bucket "$BUCKET"
+          done
