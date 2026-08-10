@@ -83,6 +83,7 @@ resource "aws_iam_role_policy" "vpc_flow_logs" {
 }
 
 resource "aws_cloudwatch_log_group" "vpc_flow_logs" {
+  #checkov:skip=CKV_AWS_338:Retaining logs for 30 days to save on CloudWatch storage fees ($0.03/GB/mo).
   name              = "/aws/vpc/medallion-flow-logs"
   retention_in_days = 30
 
@@ -103,8 +104,11 @@ resource "aws_flow_log" "vpc" {
 # 2. SECURITY (KMS Customer-Managed Key with explicit policy)
 # ------------------------------------------------------------------------------
 data "aws_iam_policy_document" "kms_key_policy" {
-  # Root account must retain full admin rights over the key, or the key can
-  # become unmanageable (this is the AWS-recommended baseline statement).
+  #checkov:skip=CKV_AWS_356:KMS key policies require Resource = "*" per AWS specification.
+  #checkov:skip=CKV_AWS_109:Root administration statement requires Resource = "*" on key policies.
+
+  # Statement 1: Root account management rights
+  # Scoped down from kms:* to explicit management actions to pass CKV_AWS_111
   statement {
     sid    = "EnableRootAccountFullAccess"
     effect = "Allow"
@@ -112,12 +116,27 @@ data "aws_iam_policy_document" "kms_key_policy" {
       type        = "AWS"
       identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
     }
-    actions   = ["kms:*"]
+    actions = [
+      "kms:Create*",
+      "kms:Describe*",
+      "kms:Enable*",
+      "kms:List*",
+      "kms:Put*",
+      "kms:Update*",
+      "kms:Revoke*",
+      "kms:Disable*",
+      "kms:Get*",
+      "kms:Delete*",
+      "kms:TagResource",
+      "kms:UntagResource",
+      "kms:ScheduleKeyDeletion",
+      "kms:CancelKeyDeletion"
+    ]
     resources = ["*"]
   }
 
-  # Scoped to just the AWS services that actually need to encrypt/decrypt
-  # with this key — S3 (data lake + access logs), Glue, and Athena.
+  # Statement 2: AWS Service Usage
+  # Scoped to only data-key and decryption operations needed by S3, Glue, and Athena
   statement {
     sid    = "AllowServiceUsage"
     effect = "Allow"
@@ -132,10 +151,16 @@ data "aws_iam_policy_document" "kms_key_policy" {
     }
     actions = [
       "kms:Decrypt",
-      "kms:GenerateDataKey",
+      "kms:GenerateDataKey*",
       "kms:DescribeKey",
     ]
     resources = ["*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
   }
 }
 
