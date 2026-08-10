@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   drift-check:
-    name: "Check Terraform Drift"
+    name: "Check Infrastructure Drift"
     runs-on: ubuntu-latest
 
     steps:
@@ -30,16 +30,23 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: "us-east-1"
 
-      - name: Bootstrap State Backend Variables
+      - name: Resolve AWS Account ID & Ensure Backend Exists
         id: backend
         run: |
-          # Re-creates or resolves backend state configuration
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           STATE_BUCKET="medallion-tf-state-${ACCOUNT_ID}"
-          DYNAMO_TABLE="medallion-tf-locks"
           
+          # Check if the state backend bucket exists; if not, create it to prevent initialization failure
+          if ! aws s3api head-bucket --bucket "$STATE_BUCKET" 2>/dev/null; then
+            echo "Backend bucket missing. Creating $STATE_BUCKET..."
+            aws s3api create-bucket --bucket "$STATE_BUCKET" --region us-east-1
+            
+            aws s3api put-bucket-versioning \
+              --bucket "$STATE_BUCKET" \
+              --versioning-configuration Status=Enabled
+          fi
+
           echo "bucket=${STATE_BUCKET}" >> $GITHUB_OUTPUT
-          echo "dynamodb_table=${DYNAMO_TABLE}" >> $GITHUB_OUTPUT
 
       - name: Terraform Init
         run: |
@@ -47,26 +54,26 @@ jobs:
             -backend-config="bucket=${{ steps.backend.outputs.bucket }}" \
             -backend-config="key=medallion-lake/terraform.tfstate" \
             -backend-config="region=us-east-1" \
-            -backend-config="dynamodb_table=${{ steps.backend.outputs.dynamodb_table }}"
+            -backend-config="use_lockfile=true"
 
-      - name: Terraform Plan (Drift Check)
+      - name: Check for Infrastructure Drift
         id: plan
         run: |
-          # -detailed-exitcode returns:
-          # 0 = Succeeded, no changes (no drift)
-          # 1 = Error
-          # 2 = Succeeded, changes present (drift detected)
+          # Exit codes for terraform plan -detailed-exitcode:
+          # 0 = No changes (Infrastructure matches state)
+          # 1 = Error during planning
+          # 2 = Changes/Drift detected
           set +e
           terraform plan -detailed-exitcode -no-color
           EXIT_CODE=$?
           set -e
           
           if [ $EXIT_CODE -eq 2 ]; then
-            echo "::error::Infrastructure drift detected!"
+            echo "::error::Infrastructure drift detected! Real resources differ from terraform state."
             exit 2
           elif [ $EXIT_CODE -eq 1 ]; then
-            echo "::error::Terraform plan execution failed."
+            echo "::error::Terraform plan failed to execute."
             exit 1
           else
-            echo "Drift check passed — infrastructure matches state."
+            echo "Drift check completed successfully: Infrastructure matches Terraform configuration."
           fi
