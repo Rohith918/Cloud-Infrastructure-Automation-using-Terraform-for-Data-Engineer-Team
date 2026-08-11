@@ -1,5 +1,7 @@
 # Cloud-Infrastructure-Automation-using-Terraform-for-Data-Engineer-Team
 
+demo
+
 Minimal, single-environment AWS infrastructure for a small-business Medallion
 (Bronze/Silver/Gold) data lake, provisioned entirely through Terraform and
 deployed via GitHub Actions. This repo covers **infrastructure only** — no
