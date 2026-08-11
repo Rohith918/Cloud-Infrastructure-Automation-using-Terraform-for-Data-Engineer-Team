@@ -12,9 +12,7 @@ terraform {
     }
   }
 
-  # Values are supplied at `terraform init` time via -backend-config flags
-  # in the GitHub Actions workflow, so no hardcoded bucket/table name lives
-  # in source control (the bucket name is generated per-account at runtime).
+
   backend "s3" {}
 }
 
