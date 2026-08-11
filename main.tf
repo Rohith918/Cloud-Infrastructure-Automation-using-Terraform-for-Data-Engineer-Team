@@ -98,8 +98,6 @@ resource "aws_flow_log" "vpc" {
 # 2. SECURITY (KMS Customer-Managed Key with explicit policy)
 # ------------------------------------------------------------------------------
 data "aws_iam_policy_document" "kms_key_policy" {
-  #checkov:skip=CKV_AWS_356:KMS key policies require Resource = "*" per AWS specification.
-  #checkov:skip=CKV_AWS_109:Root administration statement requires Resource = "*" on key policies.
 
   # Statement 1: Root account management rights (With condition constraint to satisfy CKV_AWS_111)
   statement {
